@@ -45,6 +45,7 @@
 		94E917E02A5A47A300324937 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 94E917DA2A5A47A300324937 /* Localizable.strings */; };
 		94ECA38F2A5D52060066F64B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94ECA38E2A5D52050066F64B /* Assets.xcassets */; };
 		DE4D625A2AECD3CF007AB439 /* FeedbackItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE4D62592AECD3CF007AB439 /* FeedbackItemView.swift */; };
+		A1B2C3D4E5F60718293A4B5C /* LocationFilterSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5061728394A5B6C /* LocationFilterSheetView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -229,6 +230,7 @@
 				94E9179F2A5A475B00324937 /* PhotoResult */,
 				94E917A42A5A475B00324937 /* ViewForMac */,
 				94E917A92A5A475B00324937 /* SearchBarView.swift */,
+				B1C2D3E4F5061728394A5B6C /* LocationFilterSheetView.swift */,
 				94E917AA2A5A475B00324937 /* SearchResultsView.swift */,
 				94E917AB2A5A475B00324937 /* ConfigPageViews */,
 				94E917AE2A5A475B00324937 /* ContentView.swift */,
@@ -463,6 +465,7 @@
 				94E917C02A5A475B00324937 /* PhotoView.swift in Sources */,
 				94E917CC2A5A475B00324937 /* PhotoSearcher.swift in Sources */,
 				94E917C72A5A475B00324937 /* SearchBarView.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* LocationFilterSheetView.swift in Sources */,
 				94E917BB2A5A475B00324937 /* PhotoCollection.swift in Sources */,
 				94E917B72A5A475B00324937 /* PhotoSearchModel.swift in Sources */,
 				94E917B92A5A475B00324937 /* PhotoAssetCollection.swift in Sources */,
