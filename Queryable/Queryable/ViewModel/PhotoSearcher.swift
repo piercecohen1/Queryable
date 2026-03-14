@@ -429,11 +429,7 @@ class PhotoSearcher: ObservableObject {
         if !hasClipQuery && hasLocationQuery {
             let locationMatchedIds = await searchByLocation(query: location!)
             if locationMatchedIds.isEmpty {
-                if self.locationError == nil {
-                    self.searchResultCode = .NO_RESULT
-                } else {
-                    self.searchResultCode = .HAS_RESULT
-                }
+                self.searchResultCode = .NO_RESULT
                 return
             }
             for photoID in locationMatchedIds.prefix(self.TOPK_SIM) {
@@ -518,10 +514,9 @@ class PhotoSearcher: ObservableObject {
                             }
                         }
                         print("\(startingTime3.timeIntervalSinceNow * -1) seconds used for combined location+CLIP search.")
-                    }
-                    // If location search returned empty (error or no matches), fall through to CLIP-only
-                    else if self.locationError == nil {
-                        // No location matches found, show CLIP-only results
+                    } else {
+                        // Location search returned empty (geocoding error or no matches nearby).
+                        // Fall through to show CLIP-only results so the user still gets something.
                         let startingTime3 = Date()
                         for photo in topK_sim {
                             let photoID = photo.key
