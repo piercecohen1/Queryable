@@ -14,33 +14,52 @@ struct SearchBarView: View {
     private let showString: LocalizedStringKey = ["My love", "Dark night room with a lamp", "Snow outside the window", "Deep blue", "Cute kitten", "Photos of our gathering", "Beach, waves, sunset", "In car view, car on the road", "Screen display of traffic info", "Selfie in front of mirror", "Cheers"].randomElement()!
     
     var body: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .accessibilityHidden(true)
-            TextField(showString, text: $searchText)
-                .multilineTextAlignment(.leading)
-                .focused($inputFocused)
-                .accessibilityAddTraits(.isSearchField)
-                .accessibilityHint(Text("Input your sentences here, then press enter"))
-                .onSubmit {
-                    print("Searching...")
-                    Task {
-                        await photoSearcher.search(with: searchText)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .accessibilityHidden(true)
+                TextField(showString, text: $searchText)
+                    .multilineTextAlignment(.leading)
+                    .focused($inputFocused)
+                    .accessibilityAddTraits(.isSearchField)
+                    .accessibilityHint(Text("Input your sentences here, then press enter"))
+                    .onSubmit {
+                        print("Searching...")
+                        Task {
+                            await photoSearcher.search(with: searchText)
+                        }
+                    }
+                    .submitLabel(.search)
+                if !searchText.isEmpty {
+                    Button {
+                        self.clearSearch()
+                    } label: {
+                        Image(systemName: "delete.left")
+                            .foregroundColor(Color(UIColor.opaqueSeparator))
+                            .accessibilityLabel("Clear search")
                     }
                 }
-                .submitLabel(.search)
-            if !searchText.isEmpty {
-                Button {
-                    self.clearSearch()
-                } label: {
-                    Image(systemName: "delete.left")
-                        .foregroundColor(Color(UIColor.opaqueSeparator))
-                        .accessibilityLabel("Clear search")
+            }
+
+            if photoSearcher.isLocationFilterEnabled {
+                HStack(spacing: 6) {
+                    Image(systemName: "mappin.and.ellipse")
+                    Text(locationSummary)
+                        .lineLimit(2)
+                        .font(.footnote)
                 }
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Location filter: \(locationSummary)")
             }
         }
     }
     
+    private var locationSummary: String {
+        let location = photoSearcher.locationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !location.isEmpty else { return "Enabled" }
+        return "\(location) · \(Int(photoSearcher.locationRadiusKM)) km"
+    }
+
     private func clearSearch() {
         self.searchText = ""
         inputFocused = true

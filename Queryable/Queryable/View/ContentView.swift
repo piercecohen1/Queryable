@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var goToIndexView = false
+    @State private var showLocationFilter = false
     @ObservedObject var photoSearcher = PhotoSearcher()
     
     var body: some View {
@@ -60,7 +61,19 @@ struct ContentView: View {
             }
             .navigationBarTitleDisplayMode(.large)
             .toolbar() {
-                ToolbarItemGroup {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showLocationFilter = true
+                    } label: {
+                        Label("Location Filter", systemImage: photoSearcher.isLocationFilterEnabled ? "mappin.and.ellipse.circle.fill" : "mappin.and.ellipse")
+                            .labelStyle(.iconOnly)
+                            .font(.title3)
+                    }
+                    .accessibilityLabel(Text("Location Filter"))
+                    .accessibilityHint(Text("Add or adjust location filtering for search"))
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink(destination: ConfigView().environmentObject(photoSearcher)) {
                         Label("Config", systemImage: "gearshape")
                             .labelStyle(.iconOnly)
@@ -69,6 +82,9 @@ struct ContentView: View {
                             .accessibilityHint(Text("About Queryable, privacy concerns and feedback contact"))
                     }
                 }
+            }
+            .sheet(isPresented: $showLocationFilter) {
+                LocationFilterSheetView(photoSearcher: photoSearcher)
             }
             .navigationTitle("Queryable")
             .accessibilityAddTraits(.isHeader)

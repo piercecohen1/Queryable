@@ -9,6 +9,7 @@ import UIKit
 import Photos
 import CoreML
 import Accelerate
+import CoreLocation
 
 // search result code.
  enum SEARCH_RESULT_CODE: Int {
@@ -50,6 +51,10 @@ class PhotoSearcher: ObservableObject {
     @Published var similarPhotoAssets = [PhotoAsset]()
     @Published var searchResultPhotoAssets = [PhotoAsset]()
     @Published var searchString: String = ""
+    @Published var isLocationFilterEnabled = false
+    @Published var locationQuery: String = ""
+    @Published var locationRadiusKM: Double = 25
+    @Published var locationFilterErrorMessage: String?
     
     private(set) var savedEmbedding = [String: MLMultiArray]()
     private(set) var buildingEmbedding = [String: MLMultiArray]()
@@ -64,6 +69,7 @@ class PhotoSearcher: ObservableObject {
     private let SAVE_EMBEDDING_EVERY = 5000
     private let EMBEDDING_SIM_COMPARE_FRAGMENT_LENGTH = 1000
     private var emb_sim_dict = [String: Float32]()
+    private let geocoder = CLGeocoder()
     
     @Published var TOPK_SIM: Int {
         didSet {
@@ -414,6 +420,7 @@ class PhotoSearcher: ObservableObject {
         // clean before results.
         self.searchString = query
         self.searchResultPhotoAssets = [PhotoAsset]()
+        self.locationFilterErrorMessage = nil
         
         self.searchResultCode = .IS_SEARCHING
         do {
@@ -445,6 +452,46 @@ class PhotoSearcher: ObservableObject {
                     print("\(startingTime.timeIntervalSinceNow * -1) seconds used for save the updated embedding to file.")
                 }
                 
+                let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                var filteredEmbeddings = self.savedEmbedding
+
+                if self.isLocationFilterEnabled {
+                    let trimmedLocation = self.locationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmedLocation.isEmpty {
+                        self.searchResultCode = .NO_RESULT
+                        self.locationFilterErrorMessage = "Please enter a location to filter by place."
+                        return
+                    }
+
+                    do {
+                        filteredEmbeddings = try await self.filterEmbeddingsByLocation(
+                            embeddings: self.savedEmbedding,
+                            locationText: trimmedLocation,
+                            radiusKM: self.locationRadiusKM
+                        )
+                    } catch {
+                        self.searchResultCode = .NO_RESULT
+                        self.locationFilterErrorMessage = error.localizedDescription
+                        return
+                    }
+                }
+
+                if filteredEmbeddings.isEmpty {
+                    self.searchResultCode = .NO_RESULT
+                    return
+                }
+
+                if trimmedQuery.isEmpty && !self.isLocationFilterEnabled {
+                    self.searchResultCode = .MODEL_PREPARED
+                    return
+                }
+
+                if trimmedQuery.isEmpty {
+                    self.searchResultPhotoAssets = self.buildLocationOnlyResults(from: filteredEmbeddings)
+                    self.searchResultCode = self.searchResultPhotoAssets.isEmpty ? .NO_RESULT : .HAS_RESULT
+                    return
+                }
+
                 print("Searching query = \(query)")
                 let _text_emb = self.photoSearchModel.text_embedding(prompt: query)
                 print(_text_emb)
@@ -452,14 +499,14 @@ class PhotoSearcher: ObservableObject {
                 let startingTime = Date()
     
                 
-                let img_emb_pieces_lst = self.seperateEmbeddingsByCoreNums(img_embs_dict: self.savedEmbedding)
+                let img_emb_pieces_lst = self.seperateEmbeddingsByCoreNums(img_embs_dict: filteredEmbeddings)
                 
                 // 6.69201397895813 seconds used for calculat sim between 34639 embs before.
                 // self.simpleComputeAllEmbeddingSim(text_emb: _text_emb, img_emb_pieces_lst: img_emb_pieces_lst)
                 
                 // reduce to 2.8s.
                 try await self.batchComputeEmbeddingSimilarity(text_emb: _text_emb, img_embs_dict_lst: img_emb_pieces_lst)
-                print("\(startingTime.timeIntervalSinceNow * -1) seconds used for calculat sim between \(self.savedEmbedding.keys.count) embs.")
+                print("\(startingTime.timeIntervalSinceNow * -1) seconds used for calculat sim between \(filteredEmbeddings.keys.count) embs.")
                 
                 let startingTime2 = Date()
                 // 0.20966589450836182 seconds used for find top3 sim in 34639 scores.
@@ -476,7 +523,9 @@ class PhotoSearcher: ObservableObject {
                     logger.debug("photoID: \(photoID), sim: \(photoSim)")
                     
                     let _asset = PhotoAsset(identifier: photoID)
-                    self.searchResultPhotoAssets.append(_asset)
+                    if _asset.phAsset != nil {
+                        self.searchResultPhotoAssets.append(_asset)
+                    }
                 }
                 print("\(startingTime3.timeIntervalSinceNow * -1) seconds used for download top\(FINAL_TOP_K) sim images.")
                 
@@ -486,6 +535,46 @@ class PhotoSearcher: ObservableObject {
         } catch let error {
             logger.error("Failed to search photos: \(error.localizedDescription)")
         }
+    }
+
+    private func filterEmbeddingsByLocation(
+        embeddings: [String: MLMultiArray],
+        locationText: String,
+        radiusKM: Double
+    ) async throws -> [String: MLMultiArray] {
+        let placemarks = try await geocoder.geocodeAddressString(locationText)
+        guard let coordinate = placemarks.first?.location else {
+            throw NSError(domain: "Queryable", code: 1001, userInfo: [NSLocalizedDescriptionKey: "Could not find that location. Try a more specific place name."])
+        }
+
+        var filtered = [String: MLMultiArray]()
+        let maxDistance = radiusKM * 1000
+
+        for (assetID, embedding) in embeddings {
+            let fetchedAssets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+            guard let asset = fetchedAssets.firstObject, let assetLocation = asset.location else { continue }
+            if assetLocation.distance(from: coordinate) <= maxDistance {
+                filtered[assetID] = embedding
+            }
+        }
+
+        return filtered
+    }
+
+    private func buildLocationOnlyResults(from embeddings: [String: MLMultiArray]) -> [PhotoAsset] {
+        let results = embeddings.keys
+            .compactMap { id -> (PhotoAsset, Date?)? in
+                let asset = PhotoAsset(identifier: id)
+                guard let phAsset = asset.phAsset else { return nil }
+                return (asset, phAsset.creationDate)
+            }
+            .sorted {
+                ($0.1 ?? .distantPast) > ($1.1 ?? .distantPast)
+            }
+            .prefix(self.TOPK_SIM)
+            .map { $0.0 }
+
+        return Array(results)
     }
     
     
