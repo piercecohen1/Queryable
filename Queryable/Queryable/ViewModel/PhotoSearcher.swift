@@ -9,6 +9,7 @@ import UIKit
 import Photos
 import CoreML
 import Accelerate
+import CoreLocation
 
 // search result code.
  enum SEARCH_RESULT_CODE: Int {
@@ -50,6 +51,9 @@ class PhotoSearcher: ObservableObject {
     @Published var similarPhotoAssets = [PhotoAsset]()
     @Published var searchResultPhotoAssets = [PhotoAsset]()
     @Published var searchString: String = ""
+    @Published var isLocationFilterActive: Bool = false
+    @Published var locationQuery: String = ""
+    @Published var locationError: String?
     
     private(set) var savedEmbedding = [String: MLMultiArray]()
     private(set) var buildingEmbedding = [String: MLMultiArray]()
@@ -410,12 +414,36 @@ class PhotoSearcher: ObservableObject {
     /**
      Search Part
      */
-    func search(with query: String) async {
+    func search(with query: String, location: String? = nil) async {
         // clean before results.
         self.searchString = query
         self.searchResultPhotoAssets = [PhotoAsset]()
-        
+        self.locationError = nil
+
         self.searchResultCode = .IS_SEARCHING
+
+        let hasClipQuery = !query.isEmpty
+        let hasLocationQuery = location != nil && !location!.isEmpty
+
+        // Location-only search (no CLIP query needed)
+        if !hasClipQuery && hasLocationQuery {
+            let locationMatchedIds = await searchByLocation(query: location!)
+            if locationMatchedIds.isEmpty {
+                if self.locationError == nil {
+                    self.searchResultCode = .NO_RESULT
+                } else {
+                    self.searchResultCode = .HAS_RESULT
+                }
+                return
+            }
+            for photoID in locationMatchedIds.prefix(self.TOPK_SIM) {
+                let _asset = PhotoAsset(identifier: photoID)
+                self.searchResultPhotoAssets.append(_asset)
+            }
+            self.searchResultCode = .HAS_RESULT
+            return
+        }
+
         do {
             if self.savedEmbedding.isEmpty {
                 print("Never indexed.")
@@ -424,11 +452,11 @@ class PhotoSearcher: ObservableObject {
                 // search from indexed result
                 print("Has indexed data, now begin to search.")
                 print("Test if I can fetch all photos: \(self.photoCollection.photoAssets.count)")
-                
+
                 // Filter whether Photo has been deleted.
                 if !self.allPhotosId.isEmpty {
                     let startingTime = Date()
-                    
+
                     var cnt = 0
                     for key in self.savedEmbedding.keys {
                         if let _ = self.allPhotosId[key] {
@@ -438,53 +466,124 @@ class PhotoSearcher: ObservableObject {
                         }
                     }
                     print("\(cnt) keys in savedEmbedding has been deleted.")
-                    
+
                     if cnt > 0 {
                         self.updateEmbedding(new_indexed_results: [String : MLMultiArray]())
                     }
                     print("\(startingTime.timeIntervalSinceNow * -1) seconds used for save the updated embedding to file.")
                 }
-                
+
                 print("Searching query = \(query)")
                 let _text_emb = self.photoSearchModel.text_embedding(prompt: query)
                 print(_text_emb)
-                
+
                 let startingTime = Date()
-    
-                
+
+
                 let img_emb_pieces_lst = self.seperateEmbeddingsByCoreNums(img_embs_dict: self.savedEmbedding)
-                
+
                 // 6.69201397895813 seconds used for calculat sim between 34639 embs before.
                 // self.simpleComputeAllEmbeddingSim(text_emb: _text_emb, img_emb_pieces_lst: img_emb_pieces_lst)
-                
+
                 // reduce to 2.8s.
                 try await self.batchComputeEmbeddingSimilarity(text_emb: _text_emb, img_embs_dict_lst: img_emb_pieces_lst)
                 print("\(startingTime.timeIntervalSinceNow * -1) seconds used for calculat sim between \(self.savedEmbedding.keys.count) embs.")
-                
+
                 let startingTime2 = Date()
                 // 0.20966589450836182 seconds used for find top3 sim in 34639 scores.
-                
+
                 let FINAL_TOP_K = min(self.TOPK_SIM, self.emb_sim_dict.count)
                 let topK_sim = self.emb_sim_dict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
                 print("\(startingTime2.timeIntervalSinceNow * -1) seconds used for find top\(FINAL_TOP_K) sim in \(self.emb_sim_dict.keys.count) scores.")
-                
-                let startingTime3 = Date()
-                
-                for photo in topK_sim {
-                    let photoSim = photo.value
-                    let photoID = photo.key
-                    logger.debug("photoID: \(photoID), sim: \(photoSim)")
-                    
-                    let _asset = PhotoAsset(identifier: photoID)
-                    self.searchResultPhotoAssets.append(_asset)
+
+                // Combined search: intersect CLIP results with location filter
+                if hasLocationQuery {
+                    let locationMatchedIds = Set(await searchByLocation(query: location!))
+                    if !locationMatchedIds.isEmpty {
+                        // Filter CLIP results to only those in the location set, preserving CLIP order
+                        let startingTime3 = Date()
+                        for photo in topK_sim {
+                            let photoID = photo.key
+                            if locationMatchedIds.contains(photoID) {
+                                let _asset = PhotoAsset(identifier: photoID)
+                                self.searchResultPhotoAssets.append(_asset)
+                            }
+                        }
+                        // Also add location matches not in CLIP top-K (they're relevant by location)
+                        let clipIds = Set(topK_sim.map { $0.key })
+                        for photoID in locationMatchedIds {
+                            if !clipIds.contains(photoID) && self.searchResultPhotoAssets.count < self.TOPK_SIM {
+                                let _asset = PhotoAsset(identifier: photoID)
+                                self.searchResultPhotoAssets.append(_asset)
+                            }
+                        }
+                        print("\(startingTime3.timeIntervalSinceNow * -1) seconds used for combined location+CLIP search.")
+                    }
+                    // If location search returned empty (error or no matches), fall through to CLIP-only
+                    else if self.locationError == nil {
+                        // No location matches found, show CLIP-only results
+                        let startingTime3 = Date()
+                        for photo in topK_sim {
+                            let photoID = photo.key
+                            let _asset = PhotoAsset(identifier: photoID)
+                            self.searchResultPhotoAssets.append(_asset)
+                        }
+                        print("\(startingTime3.timeIntervalSinceNow * -1) seconds used for download top\(FINAL_TOP_K) sim images.")
+                    }
+                } else {
+                    // CLIP-only search (original behavior)
+                    let startingTime3 = Date()
+                    for photo in topK_sim {
+                        let photoSim = photo.value
+                        let photoID = photo.key
+                        logger.debug("photoID: \(photoID), sim: \(photoSim)")
+
+                        let _asset = PhotoAsset(identifier: photoID)
+                        self.searchResultPhotoAssets.append(_asset)
+                    }
+                    print("\(startingTime3.timeIntervalSinceNow * -1) seconds used for download top\(FINAL_TOP_K) sim images.")
                 }
-                print("\(startingTime3.timeIntervalSinceNow * -1) seconds used for download top\(FINAL_TOP_K) sim images.")
-                
-                self.searchResultCode = .HAS_RESULT
+
+                if self.searchResultPhotoAssets.isEmpty {
+                    self.searchResultCode = .NO_RESULT
+                } else {
+                    self.searchResultCode = .HAS_RESULT
+                }
             }
-            
+
         } catch let error {
             logger.error("Failed to search photos: \(error.localizedDescription)")
+        }
+    }
+
+    /// Search photos by location name. Geocodes the query, then finds photos taken within the given radius (meters).
+    private func searchByLocation(query: String, radius: Double = 25000) async -> [String] {
+        let geocoder = CLGeocoder()
+        do {
+            let placemarks = try await geocoder.geocodeAddressString(query)
+            guard let location = placemarks.first?.location else {
+                self.locationError = "Could not find location: \(query)"
+                return []
+            }
+
+            var matchedIds = [(String, CLLocationDistance)]()
+            let fetchResult = self.photoCollection.photoAssets.fetchResult
+            fetchResult.enumerateObjects { (asset, _, _) in
+                guard let photoLocation = asset.location else { return }
+                let distance = photoLocation.distance(from: location)
+                if distance <= radius {
+                    matchedIds.append((asset.localIdentifier, distance))
+                }
+            }
+
+            // Sort by distance (closest first)
+            matchedIds.sort { $0.1 < $1.1 }
+            print("Location search for '\(query)': found \(matchedIds.count) photos within \(radius/1000)km")
+            return matchedIds.map { $0.0 }
+        } catch {
+            self.locationError = "Location search failed: \(error.localizedDescription)"
+            print("Geocoding error: \(error.localizedDescription)")
+            return []
         }
     }
     
